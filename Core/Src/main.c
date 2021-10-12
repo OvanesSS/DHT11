@@ -24,25 +24,17 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
-//#include "DHT.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DHT_TIMEOUT 				100000	//Количество итераций, после которых функция вернёт пустые значения
-#define DHT_POLLING_CONTROL			1		//Включение проверки частоты опроса датчика
-#define DHT_POLLING_INTERVAL_DHT11	2000	//Интервал опроса DHT11 (0.5 Гц по даташиту). Можно поставить 1500, будет работать
-#define DHT_POLLING_INTERVAL_DHT22	1000	//Интервал опроса DHT22 (1 Гц по даташиту)
 
-#define lineDown() 		HAL_GPIO_WritePin(sensor->DHT_Port, sensor->DHT_Pin, GPIO_PIN_RESET)
-#define lineUp()		HAL_GPIO_WritePin(sensor->DHT_Port, sensor->DHT_Pin, GPIO_PIN_SET)
-#define getLine()		(HAL_GPIO_ReadPin(sensor->DHT_Port, sensor->DHT_Pin) == GPIO_PIN_SET)
-#define Delay(d)		HAL_Delay(d)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,170 +43,60 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim1;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-typedef struct {
-	float hum;
-	float temp;
-} DHT_data;
-
-typedef enum {
-	DHT11,
-	DHT22
-} DHT_type;
-
-typedef struct {
-	GPIO_TypeDef *DHT_Port;	//Порт датчика (GPIOA, GPIOB, etc)
-	uint16_t DHT_Pin;		//Номер пина датчика (GPIO_PIN_0, GPIO_PIN_1, etc)
-	DHT_type type;			//Тип датчика (DHT11 или DHT22)
-	uint8_t pullUp;			//Нужна ли подтяжка к питанию (0 - нет, 1 - да)
-
-	//Контроль частоты опроса датчика. Значения не заполнять!
-	#if DHT_POLLING_CONTROL == 1
-	uint32_t lastPollingTime;//Время последнего опроса датчика
-	float lastTemp;			 //Последнее значение температуры
-	float lastHum;			 //Последнее значение влажности
-	#endif
-} DHT_sensor;
+char error[12]={"Error 404!\n"};
+char result[64]={0};
+uint8_t i, j = 0;
+uint8_t data[5] = {0, 0, 0, 0, 0};
+uint16_t Hum1 = 0;
+uint16_t Temp1 = 0;
+uint8_t Width_neg = 0;
+uint8_t Width_pos = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-static void goToOutput(DHT_sensor *sensor) {
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  //По умолчанию на линии высокий уровень
-  lineUp();
-
-  //Настройка порта на выход
-  GPIO_InitStruct.Pin = sensor->DHT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD; 	//Открытый сток
-  if(sensor->pullUp == 1) {
-	  GPIO_InitStruct.Pull = GPIO_PULLUP;						//Подтяжка к питанию
-  } else {
-	  GPIO_InitStruct.Pull = GPIO_NOPULL;						//Без подтяжки
-  }
-
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; //Высокая скорость работы порта
-  HAL_GPIO_Init(sensor->DHT_Port, &GPIO_InitStruct);
-}
-
-static void goToInput(DHT_sensor *sensor) {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  //Настройка порта на вход
-  GPIO_InitStruct.Pin = sensor->DHT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  if(sensor->pullUp == 1) {
-	  GPIO_InitStruct.Pull = GPIO_PULLUP;						//Подтяжка к питанию
-  } else {
-	  GPIO_InitStruct.Pull = GPIO_NOPULL;						//Без подтяжки
-  }
-  HAL_GPIO_Init(sensor->DHT_Port, &GPIO_InitStruct);
-}
-
-DHT_data DHT_getData(DHT_sensor *sensor) {
-	DHT_data data = {0.0f, 0.0f};
-
-
-	#if DHT_POLLING_CONTROL == 1
-	/* Ограничение по частоте опроса датчика */
-	//Определение интервала опроса в зависимости от датчика
-	uint16_t pollingInterval;
-	if (sensor->type == DHT11) {
-		pollingInterval = DHT_POLLING_INTERVAL_DHT11;
-	} else {
-		pollingInterval = DHT_POLLING_INTERVAL_DHT22;
-	}
-
-	//Если частота превышена, то возврат последнего удачного значения
-	if (HAL_GetTick()-sensor->lastPollingTime < pollingInterval) {
-		data.hum = sensor->lastHum;
-		data.temp = sensor->lastTemp;
-		return data;
-	}
-	sensor->lastPollingTime = HAL_GetTick();
-	#endif
-
-	/* Запрос данных у датчика */
-	//Перевод пина "на выход"
-	goToOutput(sensor);
-	//Опускание линии данных на 15 мс
-	lineDown();
-	Delay(20);
-	//Подъём линии, перевод порта "на вход"
-	lineUp();
-	goToInput(sensor);
-
-	/* Ожидание ответа от датчика */
-	uint16_t timeout = 0;
-	//Ожидание спада
-	while(getLine()) {
-		timeout++;
-		if (timeout > DHT_TIMEOUT) return data;
-	}
-	timeout = 0;
-	//Ожидание подъёма
-	while(!getLine()) {
-		timeout++;
-		if (timeout > DHT_TIMEOUT) return data;
-	}
-	timeout = 0;
-	//Ожидание спада
-	while(getLine()) {
-		timeout++;
-		if (timeout > DHT_TIMEOUT) return data;
-	}
-
-	/* Чтение ответа от датчика */
-	uint8_t rawData[5] = {0,0,0,0,0};
-	for(uint8_t a = 0; a < 5; a++) {
-		for(uint8_t b = 7; b != 255; b--) {
-			uint32_t hT = 0, lT = 0;
-			//Пока линия в низком уровне, инкремент переменной lT
-			while(!getLine()) lT++;
-			//Пока линия в высоком уровне, инкремент переменной hT
-			timeout = 0;
-			while(getLine()) hT++;
-			//Если hT больше lT, то пришла единица
-			if(hT > lT) rawData[a] |= (1<<b);
-		}
-	}
-	/* Проверка целостности данных */
-	if((uint8_t)(rawData[0] + rawData[1] + rawData[2] + rawData[3]) == rawData[4]) {
-		//Если контрольная сумма совпадает, то конвертация и возврат полученных значений
-		if (sensor->type == DHT22) {
-			data.hum = (float)(((uint16_t)rawData[0]<<8) | rawData[1])*0.1f;
-			//Проверка на отрицательность температуры
-			if(!(rawData[2] & (1<<7))) {
-				data.temp = (float)(((uint16_t)rawData[2]<<8) | rawData[3])*0.1f;
-			}	else {
-				rawData[2] &= ~(1<<7);
-				data.temp = (float)(((uint16_t)rawData[2]<<8) | rawData[3])*-0.1f;
-			}
-		}
-		if (sensor->type == DHT11) {
-			data.hum = (float)rawData[0];
-			data.temp = (float)rawData[2];;
-		}
-	}
-
-	#if DHT_POLLING_CONTROL == 1
-	sensor->lastHum = data.hum;
-	sensor->lastTemp = data.temp;
-	#endif
-
-	return data;
-}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void goToOutput(void) { //Настройка порта на выход
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+  //По умолчанию на линии высокий уровень
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+
+  //Настройка порта на выход
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD; 	//Открытый сток
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; //Высокая скорость работы порта
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+static void goToInput(void) {//Настройка порта на вход
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  //Настройка порта на вход
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+void delay (uint16_t time)
+{
+	TIM1 -> CNT = 0;//скидываем значение счетчика таймера
+	while (TIM1 -> CNT < time);//считаем до time
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -246,28 +128,66 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  //temp_s data;
-  //char buf[20] = {0};
-  //uint8_t err[] = "Error!404\n\r";
-  static DHT_sensor livingRoom = {GPIOB, GPIO_PIN_6, DHT11, 0};
+  HAL_TIM_Base_Start(&htim1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  goToOutput();
+	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	  HAL_Delay(2000);
+	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+	  delay(18000);// прижимаем сигнал на 18 мс
+	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	  goToInput(); // переключаем порт на вход
+	  delay(40);
+	  if(HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET) //проверяем ответит ли датчик
+	  {
+		  delay(80);
+		  if(HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_SET)
+		  	  {
+			  delay(50);
+			  	  for (j=0; j<5; j++) //начинаем считывать байты
+			  	  {
+			  		  data[4-j]=0;
+			  		  for(i=0; i<8; i++)
+			  		  {
+			  			  while (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET){
+			  			  		  Width_neg++;
+			  			  		  delay(1);}
+			  			  while (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_SET){
+			  			  		  Width_pos++;
+			  			  		  delay(1);}
+			  			  if (Width_pos > Width_neg) //Если длительность импульса положительной полярности больше чем длительность импульса отрицательной полярности то заносим 1
+			  			  	  {
+			  				  	  data[4-j] |= (1<<(7-i));
+			  			  	  }
+			  			  Width_neg = 0;
+			  			  Width_pos = 0;
+			  		  }
+			  	  }
+			  	  Hum1 = data[0];
+			  	  Temp1 = data[2];
+			  	  snprintf(result, 64, "Hum = %d %%,\n Temp = %d *C\n", Hum1, Temp1);
+			  	  HAL_UART_Transmit(&huart1, (uint8_t*)result, strlen(result), 0xFF);
+		  	  }
+		  else
+		  	  {
+		  		  HAL_UART_Transmit(&huart1, (uint8_t*)error, strlen(error), 10);
+		  	  }
 
-	  char msg[40];
-	  //Получение данных с датчика
-	  DHT_data d = DHT_getData(&livingRoom);
-	  //Печать данных в буффер
-	  sprintf(msg, "\fLiving room: Temp %d°C, Hum %d%% \n\r", (uint8_t)d.temp, (uint8_t)d.hum);
-	  //Отправка текста в UART
-	  for(int k = 0; k<20000; k++){
-		  if(k == 19990)
-			  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 0xFF);
 	  }
+	  else
+	  {
+		  HAL_UART_Transmit(&huart1, (uint8_t*)error, strlen(error), 10);
+	  }
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
@@ -311,6 +231,52 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 71;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -350,10 +316,22 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
 
